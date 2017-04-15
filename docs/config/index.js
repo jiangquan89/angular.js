@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 var path = require('canonical-path');
 var packagePath = __dirname;
@@ -6,18 +6,18 @@ var packagePath = __dirname;
 var Package = require('dgeni').Package;
 
 // Create and export a new Dgeni package called angularjs. This package depends upon
-// the ngdoc, nunjucks, and examples packages defined in the dgeni-packages npm module.
+// the ngdoc, nunjucks, and examples packages defined in the dgeni-packages node module.
 module.exports = new Package('angularjs', [
   require('dgeni-packages/ngdoc'),
   require('dgeni-packages/nunjucks'),
-  require('dgeni-packages/examples')
+  require('dgeni-packages/examples'),
+  require('dgeni-packages/git')
 ])
 
 
 .factory(require('./services/errorNamespaceMap'))
 .factory(require('./services/getMinerrInfo'))
 .factory(require('./services/getVersion'))
-.factory(require('./services/gitData'))
 
 .factory(require('./services/deployments/debug'))
 .factory(require('./services/deployments/default'))
@@ -25,7 +25,6 @@ module.exports = new Package('angularjs', [
 .factory(require('./services/deployments/production'))
 
 .factory(require('./inline-tag-defs/type'))
-
 
 .processor(require('./processors/error-docs'))
 .processor(require('./processors/index-page'))
@@ -43,7 +42,7 @@ module.exports = new Package('angularjs', [
 
   readFilesProcessor.basePath = path.resolve(__dirname,'../..');
   readFilesProcessor.sourceFiles = [
-    { include: 'src/**/*.js', basePath: 'src' },
+    { include: 'src/**/*.js', exclude: 'src/angular.bind.js', basePath: 'src' },
     { include: 'docs/content/**/*.ngdoc', basePath: 'docs/content' }
   ];
 
@@ -53,8 +52,12 @@ module.exports = new Package('angularjs', [
 
 
 .config(function(parseTagsProcessor) {
+  parseTagsProcessor.tagDefinitions.push(require('./tag-defs/deprecated')); // this will override the jsdoc version
   parseTagsProcessor.tagDefinitions.push(require('./tag-defs/tutorial-step'));
   parseTagsProcessor.tagDefinitions.push(require('./tag-defs/sortOrder'));
+  parseTagsProcessor.tagDefinitions.push(require('./tag-defs/installation'));
+  parseTagsProcessor.tagDefinitions.push(require('./tag-defs/this'));
+
 })
 
 
@@ -64,7 +67,11 @@ module.exports = new Package('angularjs', [
 
 
 .config(function(templateFinder, renderDocsProcessor, gitData) {
-  templateFinder.templateFolders.unshift(path.resolve(packagePath, 'templates'));
+  // We are completely overwriting the folders
+  templateFinder.templateFolders.length = 0;
+  templateFinder.templateFolders.unshift(path.resolve(packagePath, 'templates/examples'));
+  templateFinder.templateFolders.unshift(path.resolve(packagePath, 'templates/ngdoc'));
+  templateFinder.templateFolders.unshift(path.resolve(packagePath, 'templates/app'));
   renderDocsProcessor.extraData.git = gitData;
 })
 
@@ -87,7 +94,7 @@ module.exports = new Package('angularjs', [
     docTypes: ['overview', 'tutorial'],
     getPath: function(doc) {
       var docPath = path.dirname(doc.fileInfo.relativePath);
-      if ( doc.fileInfo.baseName !== 'index' ) {
+      if (doc.fileInfo.baseName !== 'index') {
         docPath = path.join(docPath, doc.fileInfo.baseName);
       }
       return docPath;
@@ -108,12 +115,12 @@ module.exports = new Package('angularjs', [
   });
 
   computePathsProcessor.pathTemplates.push({
-    docTypes: ['module' ],
+    docTypes: ['module'],
     pathTemplate: '${area}/${name}',
     outputPathTemplate: 'partials/${area}/${name}.html'
   });
   computePathsProcessor.pathTemplates.push({
-    docTypes: ['componentGroup' ],
+    docTypes: ['componentGroup'],
     pathTemplate: '${area}/${moduleName}/${groupType}',
     outputPathTemplate: 'partials/${area}/${moduleName}/${groupType}.html'
   });
@@ -171,4 +178,8 @@ module.exports = new Package('angularjs', [
     jqueryDeployment,
     productionDeployment
   ];
+})
+
+.config(function(generateKeywordsProcessor) {
+  generateKeywordsProcessor.docTypesToIgnore = ['componentGroup'];
 });

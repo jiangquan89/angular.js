@@ -1,6 +1,6 @@
 'use strict';
 
-var $$AnimateCssDriverProvider = ['$$animationProvider', function($$animationProvider) {
+var $$AnimateCssDriverProvider = ['$$animationProvider', /** @this */ function($$animationProvider) {
   $$animationProvider.drivers.push('$$animateCssDriver');
 
   var NG_ANIMATE_SHIM_CLASS_NAME = 'ng-animate-shim';
@@ -9,16 +9,25 @@ var $$AnimateCssDriverProvider = ['$$animationProvider', function($$animationPro
   var NG_OUT_ANCHOR_CLASS_NAME = 'ng-anchor-out';
   var NG_IN_ANCHOR_CLASS_NAME = 'ng-anchor-in';
 
-  this.$get = ['$animateCss', '$rootScope', '$$AnimateRunner', '$rootElement', '$document', '$sniffer',
-       function($animateCss,   $rootScope,   $$AnimateRunner,   $rootElement,   $document,   $sniffer) {
+  function isDocumentFragment(node) {
+    return node.parentNode && node.parentNode.nodeType === 11;
+  }
+
+  this.$get = ['$animateCss', '$rootScope', '$$AnimateRunner', '$rootElement', '$sniffer', '$$jqLite', '$document',
+       function($animateCss,   $rootScope,   $$AnimateRunner,   $rootElement,   $sniffer,   $$jqLite,   $document) {
 
     // only browsers that support these properties can render animations
     if (!$sniffer.animations && !$sniffer.transitions) return noop;
 
-    var bodyNode = getDomNode($document).body;
+    var bodyNode = $document[0].body;
     var rootNode = getDomNode($rootElement);
 
-    var rootBodyElement = jqLite(bodyNode.parentNode === rootNode ? bodyNode : rootNode);
+    var rootBodyElement = jqLite(
+      // this is to avoid using something that exists outside of the body
+      // we also special case the doc fragment case because our unit test code
+      // appends the $rootElement to the body after the app has been bootstrapped
+      isDocumentFragment(rootNode) || bodyNode.contains(rootNode) ? rootNode : bodyNode
+    );
 
     return function initDriverFn(animationDetails) {
       return animationDetails.from && animationDetails.to
@@ -113,7 +122,7 @@ var $$AnimateCssDriverProvider = ['$$animationProvider', function($$animationPro
         var coords = getDomNode(anchor).getBoundingClientRect();
 
         // we iterate directly since safari messes up and doesn't return
-        // all the keys for the coods object when iterated
+        // all the keys for the coords object when iterated
         forEach(['width','height','top','left'], function(key) {
           var value = coords[key];
           switch (key) {
@@ -170,8 +179,8 @@ var $$AnimateCssDriverProvider = ['$$animationProvider', function($$animationPro
     }
 
     function prepareFromToAnchorAnimation(from, to, classes, anchors) {
-      var fromAnimation = prepareRegularAnimation(from);
-      var toAnimation = prepareRegularAnimation(to);
+      var fromAnimation = prepareRegularAnimation(from, noop);
+      var toAnimation = prepareRegularAnimation(to, noop);
 
       var anchorAnimations = [];
       forEach(anchors, function(anchor) {
@@ -226,20 +235,24 @@ var $$AnimateCssDriverProvider = ['$$animationProvider', function($$animationPro
       var element = animationDetails.element;
       var options = animationDetails.options || {};
 
-      options.structural = animationDetails.structural;
+      if (animationDetails.structural) {
+        options.event = animationDetails.event;
+        options.structural = true;
+        options.applyClassesEarly = true;
 
-      // structural animations ensure that the CSS classes are always applied
-      // before the detection starts.
-      options.applyClassesEarly = options.structural;
+        // we special case the leave animation since we want to ensure that
+        // the element is removed as soon as the animation is over. Otherwise
+        // a flicker might appear or the element may not be removed at all
+        if (animationDetails.event === 'leave') {
+          options.onDone = options.domOperation;
+        }
+      }
 
-      // we special case the leave animation since we want to ensure that
-      // the element is removed as soon as the animation is over. Otherwise
-      // a flicker might appear or the element may not be removed until all
-      // the other animations have completed themselves (which would then
-      // leave a pending element in the background).
-      options.event = animationDetails.event;
-      if (options.event === 'leave') {
-        options.onDone = options.domOperation;
+      // We assign the preparationClasses as the actual animation event since
+      // the internals of $animateCss will just suffix the event token values
+      // with `-active` to trigger the animation.
+      if (options.preparationClasses) {
+        options.event = concatWithSpace(options.event, options.preparationClasses);
       }
 
       var animator = $animateCss(element, options);

@@ -1,6 +1,6 @@
 'use strict';
 
-
+/** @this */
 function $TimeoutProvider() {
   this.$get = ['$rootScope', '$browser', '$q', '$$q', '$exceptionHandler',
        function($rootScope,   $browser,   $q,   $$q,   $exceptionHandler) {
@@ -13,7 +13,7 @@ function $TimeoutProvider() {
       * @name $timeout
       *
       * @description
-      * Angular's wrapper for `window.setTimeout`. The `fn` function is wrapped into a try/catch
+      * AngularJS's wrapper for `window.setTimeout`. The `fn` function is wrapped into a try/catch
       * block and delegates any exceptions to
       * {@link ng.$exceptionHandler $exceptionHandler} service.
       *
@@ -33,8 +33,8 @@ function $TimeoutProvider() {
       * @param {boolean=} [invokeApply=true] If set to `false` skips model dirty checking, otherwise
       *   will invoke `fn` within the {@link ng.$rootScope.Scope#$apply $apply} block.
       * @param {...*=} Pass additional parameters to the executed function.
-      * @returns {Promise} Promise that will be resolved when the timeout is reached. The value this
-      *   promise will be resolved with is the return value of the `fn` function.
+      * @returns {Promise} Promise that will be resolved when the timeout is reached. The promise
+      *   will be resolved with the return value of the `fn` function.
       *
       */
     function timeout(fn, delay, invokeApply) {
@@ -56,8 +56,7 @@ function $TimeoutProvider() {
         } catch (e) {
           deferred.reject(e);
           $exceptionHandler(e);
-        }
-        finally {
+        } finally {
           delete deferreds[promise.$$timeoutId];
         }
 
@@ -85,6 +84,8 @@ function $TimeoutProvider() {
       */
     timeout.cancel = function(promise) {
       if (promise && promise.$$timeoutId in deferreds) {
+        // Timeout cancels should not report an unhandled promise.
+        deferreds[promise.$$timeoutId].promise.catch(noop);
         deferreds[promise.$$timeoutId].reject('canceled');
         delete deferreds[promise.$$timeoutId];
         return $browser.defer.cancel(promise.$$timeoutId);

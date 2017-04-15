@@ -1,25 +1,22 @@
 /* global $LogProvider: false */
 'use strict';
 
-function initService(debugEnabled) {
-    return module(function($logProvider) {
-      $logProvider.debugEnabled(debugEnabled);
-    });
-  }
-
 describe('$log', function() {
   var $window, logger, log, warn, info, error, debug;
 
 
 
   beforeEach(module(function($provide) {
-    $window = {navigator: {}, document: {}};
+    $window = {
+      navigator: {userAgent: window.navigator.userAgent},
+      document: {}
+    };
     logger = '';
-    log = function() { logger+= 'log;'; };
-    warn = function() { logger+= 'warn;'; };
-    info = function() { logger+= 'info;'; };
-    error = function() { logger+= 'error;'; };
-    debug = function() { logger+= 'debug;'; };
+    log = function() { logger += 'log;'; };
+    warn = function() { logger += 'warn;'; };
+    info = function() { logger += 'info;'; };
+    error = function() { logger += 'error;'; };
+    debug = function() { logger += 'debug;'; };
 
     $provide.provider('$log', $LogProvider);
     $provide.value('$exceptionHandler', angular.mock.rethrow);
@@ -70,7 +67,14 @@ describe('$log', function() {
     }
   ));
 
-  describe("IE logging behavior", function() {
+  it('should work if $window.navigator not defined', inject(
+    function() {
+      delete $window.navigator;
+    },
+    function($log) {}
+  ));
+
+  describe('IE logging behavior', function() {
     function removeApplyFunctionForIE() {
       log.apply = log.call =
         warn.apply = warn.call =
@@ -85,7 +89,7 @@ describe('$log', function() {
         debug: debug};
     }
 
-    it("should work in IE where console.error doesn't have an apply method", inject(
+    it('should work in IE where console.error doesn\'t have an apply method', inject(
       removeApplyFunctionForIE,
       function($log) {
         $log.log.apply($log);
@@ -97,13 +101,13 @@ describe('$log', function() {
       })
     );
 
-    it("should not attempt to log the second argument in IE if it is not specified", inject(
+    it('should not attempt to log the second argument in IE if it is not specified', inject(
       function() {
-        log = function(arg1, arg2) { logger+= 'log;' + arg2; };
-        warn = function(arg1, arg2) { logger+= 'warn;' + arg2; };
-        info = function(arg1, arg2) { logger+= 'info;' + arg2; };
-        error = function(arg1, arg2) { logger+= 'error;' + arg2; };
-        debug = function(arg1, arg2) { logger+= 'debug;' + arg2; };
+        log = function(arg1, arg2) { logger += 'log;' + arg2; };
+        warn = function(arg1, arg2) { logger += 'warn;' + arg2; };
+        info = function(arg1, arg2) { logger += 'info;' + arg2; };
+        error = function(arg1, arg2) { logger += 'error;' + arg2; };
+        debug = function(arg1, arg2) { logger += 'debug;' + arg2; };
       },
       removeApplyFunctionForIE,
       function($log) {
@@ -117,11 +121,11 @@ describe('$log', function() {
     );
   });
 
-  describe("$log.debug", function() {
+  describe('$log.debug', function() {
 
     beforeEach(initService(false));
 
-    it("should skip debugging output if disabled", inject(
+    it('should skip debugging output if disabled', inject(
       function() {
         $window.console = {log: log,
                            warn: warn,
@@ -137,45 +141,68 @@ describe('$log', function() {
         $log.debug();
         expect(logger).toEqual('log;warn;info;error;');
       }
-  ));
+    ));
 
   });
 
   describe('$log.error', function() {
-    var e, $log, errorArgs;
+    var e, $log;
 
-    beforeEach(function() {
-      e = new Error('');
-      e.message = undefined;
-      e.sourceURL = undefined;
-      e.line = undefined;
-      e.stack = undefined;
+    function TestError() {
+      Error.prototype.constructor.apply(this, arguments);
+      this.message = undefined;
+      this.sourceURL = undefined;
+      this.line = undefined;
+      this.stack = undefined;
+    }
+    TestError.prototype = Object.create(Error.prototype);
+    TestError.prototype.constructor = TestError;
 
-      $log = new $LogProvider().$get[1]({console:{error:function() {
-        errorArgs = [].slice.call(arguments, 0);
-      }}});
-    });
+    beforeEach(inject(
+      function() {
+        e = new TestError('');
+        $window.console = {
+          error: jasmine.createSpy('error')
+        };
+      },
 
+      function(_$log_) {
+        $log = _$log_;
+      }
+    ));
 
     it('should pass error if does not have trace', function() {
       $log.error('abc', e);
-      expect(errorArgs).toEqual(['abc', e]);
+      expect($window.console.error).toHaveBeenCalledWith('abc', e);
     });
 
-
-    it('should print stack', function() {
-      e.stack = 'stack';
-      $log.error('abc', e);
-      expect(errorArgs).toEqual(['abc', 'stack']);
-    });
-
+    if (msie || /\bEdge\//.test(window.navigator.userAgent)) {
+      it('should print stack', function() {
+        e.stack = 'stack';
+        $log.error('abc', e);
+        expect($window.console.error).toHaveBeenCalledWith('abc', 'stack');
+      });
+    } else {
+      it('should print a raw error', function() {
+        e.stack = 'stack';
+        $log.error('abc', e);
+        expect($window.console.error).toHaveBeenCalledWith('abc', e);
+      });
+    }
 
     it('should print line', function() {
       e.message = 'message';
       e.sourceURL = 'sourceURL';
       e.line = '123';
       $log.error('abc', e);
-      expect(errorArgs).toEqual(['abc', 'message\nsourceURL:123']);
+      expect($window.console.error).toHaveBeenCalledWith('abc', 'message\nsourceURL:123');
     });
   });
+
+  function initService(debugEnabled) {
+    return module(function($logProvider) {
+      $logProvider.debugEnabled(debugEnabled);
+    });
+  }
+
 });

@@ -1,31 +1,64 @@
 'use strict';
 
-/* jshint ignore:start */
-var noop        = angular.noop;
-var extend      = angular.extend;
-var jqLite      = angular.element;
-var forEach     = angular.forEach;
-var isArray     = angular.isArray;
-var isString    = angular.isString;
-var isObject    = angular.isObject;
-var isUndefined = angular.isUndefined;
-var isDefined   = angular.isDefined;
-var isFunction  = angular.isFunction;
-var isElement   = angular.isElement;
-
 var ELEMENT_NODE = 1;
 var COMMENT_NODE = 8;
+
+var ADD_CLASS_SUFFIX = '-add';
+var REMOVE_CLASS_SUFFIX = '-remove';
+var EVENT_CLASS_PREFIX = 'ng-';
+var ACTIVE_CLASS_SUFFIX = '-active';
+var PREPARE_CLASS_SUFFIX = '-prepare';
 
 var NG_ANIMATE_CLASSNAME = 'ng-animate';
 var NG_ANIMATE_CHILDREN_DATA = '$$ngAnimateChildren';
 
-var isPromiseLike = function(p) {
-  return p && p.then ? true : false;
+// Detect proper transitionend/animationend event names.
+var CSS_PREFIX = '', TRANSITION_PROP, TRANSITIONEND_EVENT, ANIMATION_PROP, ANIMATIONEND_EVENT;
+
+// If unprefixed events are not supported but webkit-prefixed are, use the latter.
+// Otherwise, just use W3C names, browsers not supporting them at all will just ignore them.
+// Note: Chrome implements `window.onwebkitanimationend` and doesn't implement `window.onanimationend`
+// but at the same time dispatches the `animationend` event and not `webkitAnimationEnd`.
+// Register both events in case `window.onanimationend` is not supported because of that,
+// do the same for `transitionend` as Safari is likely to exhibit similar behavior.
+// Also, the only modern browser that uses vendor prefixes for transitions/keyframes is webkit
+// therefore there is no reason to test anymore for other vendor prefixes:
+// http://caniuse.com/#search=transition
+if ((window.ontransitionend === undefined) && (window.onwebkittransitionend !== undefined)) {
+  CSS_PREFIX = '-webkit-';
+  TRANSITION_PROP = 'WebkitTransition';
+  TRANSITIONEND_EVENT = 'webkitTransitionEnd transitionend';
+} else {
+  TRANSITION_PROP = 'transition';
+  TRANSITIONEND_EVENT = 'transitionend';
 }
 
+if ((window.onanimationend === undefined) && (window.onwebkitanimationend !== undefined)) {
+  CSS_PREFIX = '-webkit-';
+  ANIMATION_PROP = 'WebkitAnimation';
+  ANIMATIONEND_EVENT = 'webkitAnimationEnd animationend';
+} else {
+  ANIMATION_PROP = 'animation';
+  ANIMATIONEND_EVENT = 'animationend';
+}
+
+var DURATION_KEY = 'Duration';
+var PROPERTY_KEY = 'Property';
+var DELAY_KEY = 'Delay';
+var TIMING_KEY = 'TimingFunction';
+var ANIMATION_ITERATION_COUNT_KEY = 'IterationCount';
+var ANIMATION_PLAYSTATE_KEY = 'PlayState';
+var SAFE_FAST_FORWARD_DURATION_VALUE = 9999;
+
+var ANIMATION_DELAY_PROP = ANIMATION_PROP + DELAY_KEY;
+var ANIMATION_DURATION_PROP = ANIMATION_PROP + DURATION_KEY;
+var TRANSITION_DELAY_PROP = TRANSITION_PROP + DELAY_KEY;
+var TRANSITION_DURATION_PROP = TRANSITION_PROP + DURATION_KEY;
+
+var ngMinErr = angular.$$minErr('ng');
 function assertArg(arg, name, reason) {
   if (!arg) {
-    throw ngMinErr('areq', "Argument '{0}' is {1}", (name || '?'), (reason || "required"));
+    throw ngMinErr('areq', 'Argument \'{0}\' is {1}', (name || '?'), (reason || 'required'));
   }
   return arg;
 }
@@ -76,8 +109,7 @@ function stripCommentsFromElement(element) {
   if (element instanceof jqLite) {
     switch (element.length) {
       case 0:
-        return [];
-        break;
+        return element;
 
       case 1:
         // there is no point of stripping anything if the element
@@ -90,7 +122,6 @@ function stripCommentsFromElement(element) {
 
       default:
         return jqLite(extractElementNode(element));
-        break;
     }
   }
 
@@ -103,7 +134,7 @@ function extractElementNode(element) {
   if (!element[0]) return element;
   for (var i = 0; i < element.length; i++) {
     var elm = element[i];
-    if (elm.nodeType == ELEMENT_NODE) {
+    if (elm.nodeType === ELEMENT_NODE) {
       return elm;
     }
   }
@@ -131,7 +162,7 @@ function applyAnimationClassesFactory($$jqLite) {
       $$removeClass($$jqLite, element, options.removeClass);
       options.removeClass = null;
     }
-  }
+  };
 }
 
 function prepareAnimationOptions(options) {
@@ -167,12 +198,28 @@ function applyAnimationToStyles(element, options) {
   }
 }
 
-function mergeAnimationOptions(element, target, newOptions) {
+function mergeAnimationDetails(element, oldAnimation, newAnimation) {
+  var target = oldAnimation.options || {};
+  var newOptions = newAnimation.options || {};
+
   var toAdd = (target.addClass || '') + ' ' + (newOptions.addClass || '');
   var toRemove = (target.removeClass || '') + ' ' + (newOptions.removeClass || '');
   var classes = resolveElementClasses(element.attr('class'), toAdd, toRemove);
 
+  if (newOptions.preparationClasses) {
+    target.preparationClasses = concatWithSpace(newOptions.preparationClasses, target.preparationClasses);
+    delete newOptions.preparationClasses;
+  }
+
+  // noop is basically when there is no callback; otherwise something has been set
+  var realDomOperation = target.domOperation !== noop ? target.domOperation : null;
+
   extend(target, newOptions);
+
+  // TODO(matsko or sreeramu): proper fix is to maintain all animation callback in array and call at last,but now only leave has the callback so no issue with this.
+  if (realDomOperation) {
+    target.domOperation = realDomOperation;
+  }
 
   if (classes.addClass) {
     target.addClass = classes.addClass;
@@ -185,6 +232,9 @@ function mergeAnimationOptions(element, target, newOptions) {
   } else {
     target.removeClass = null;
   }
+
+  oldAnimation.addClass = target.addClass;
+  oldAnimation.removeClass = target.removeClass;
 
   return target;
 }
@@ -215,10 +265,10 @@ function resolveElementClasses(existing, toAdd, toRemove) {
     var prop, allow;
     if (val === ADD_CLASS) {
       prop = 'addClass';
-      allow = !existing[klass];
+      allow = !existing[klass] || existing[klass + REMOVE_CLASS_SUFFIX];
     } else if (val === REMOVE_CLASS) {
       prop = 'removeClass';
-      allow = existing[klass];
+      allow = existing[klass] || existing[klass + ADD_CLASS_SUFFIX];
     }
     if (allow) {
       if (classes[prop].length) {
@@ -248,5 +298,61 @@ function resolveElementClasses(existing, toAdd, toRemove) {
 }
 
 function getDomNode(element) {
-  return (element instanceof angular.element) ? element[0] : element;
+  return (element instanceof jqLite) ? element[0] : element;
+}
+
+function applyGeneratedPreparationClasses(element, event, options) {
+  var classes = '';
+  if (event) {
+    classes = pendClasses(event, EVENT_CLASS_PREFIX, true);
+  }
+  if (options.addClass) {
+    classes = concatWithSpace(classes, pendClasses(options.addClass, ADD_CLASS_SUFFIX));
+  }
+  if (options.removeClass) {
+    classes = concatWithSpace(classes, pendClasses(options.removeClass, REMOVE_CLASS_SUFFIX));
+  }
+  if (classes.length) {
+    options.preparationClasses = classes;
+    element.addClass(classes);
+  }
+}
+
+function clearGeneratedClasses(element, options) {
+  if (options.preparationClasses) {
+    element.removeClass(options.preparationClasses);
+    options.preparationClasses = null;
+  }
+  if (options.activeClasses) {
+    element.removeClass(options.activeClasses);
+    options.activeClasses = null;
+  }
+}
+
+function blockTransitions(node, duration) {
+  // we use a negative delay value since it performs blocking
+  // yet it doesn't kill any existing transitions running on the
+  // same element which makes this safe for class-based animations
+  var value = duration ? '-' + duration + 's' : '';
+  applyInlineStyle(node, [TRANSITION_DELAY_PROP, value]);
+  return [TRANSITION_DELAY_PROP, value];
+}
+
+function blockKeyframeAnimations(node, applyBlock) {
+  var value = applyBlock ? 'paused' : '';
+  var key = ANIMATION_PROP + ANIMATION_PLAYSTATE_KEY;
+  applyInlineStyle(node, [key, value]);
+  return [key, value];
+}
+
+function applyInlineStyle(node, styleTuple) {
+  var prop = styleTuple[0];
+  var value = styleTuple[1];
+  node.style[prop] = value;
+}
+
+function concatWithSpace(a,b) {
+  if (!a) return b;
+  if (!b) return a;
+  return a + ' ' + b;
 }

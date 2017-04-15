@@ -1,6 +1,8 @@
 'use strict';
 
-var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
+/* exported $$AnimationProvider */
+
+var $$AnimationProvider = ['$animateProvider', /** @this */ function($animateProvider) {
   var NG_ANIMATE_REF_ATTR = 'ng-animate-ref';
 
   var drivers = this.drivers = [];
@@ -19,11 +21,93 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
     return element.data(RUNNER_STORAGE_KEY);
   }
 
-  this.$get = ['$$jqLite', '$rootScope', '$injector', '$$AnimateRunner',
-       function($$jqLite,   $rootScope,   $injector,   $$AnimateRunner) {
+  this.$get = ['$$jqLite', '$rootScope', '$injector', '$$AnimateRunner', '$$Map', '$$rAFScheduler',
+       function($$jqLite,   $rootScope,   $injector,   $$AnimateRunner,   $$Map,   $$rAFScheduler) {
 
     var animationQueue = [];
     var applyAnimationClasses = applyAnimationClassesFactory($$jqLite);
+
+    function sortAnimations(animations) {
+      var tree = { children: [] };
+      var i, lookup = new $$Map();
+
+      // this is done first beforehand so that the map
+      // is filled with a list of the elements that will be animated
+      for (i = 0; i < animations.length; i++) {
+        var animation = animations[i];
+        lookup.set(animation.domNode, animations[i] = {
+          domNode: animation.domNode,
+          fn: animation.fn,
+          children: []
+        });
+      }
+
+      for (i = 0; i < animations.length; i++) {
+        processNode(animations[i]);
+      }
+
+      return flatten(tree);
+
+      function processNode(entry) {
+        if (entry.processed) return entry;
+        entry.processed = true;
+
+        var elementNode = entry.domNode;
+        var parentNode = elementNode.parentNode;
+        lookup.set(elementNode, entry);
+
+        var parentEntry;
+        while (parentNode) {
+          parentEntry = lookup.get(parentNode);
+          if (parentEntry) {
+            if (!parentEntry.processed) {
+              parentEntry = processNode(parentEntry);
+            }
+            break;
+          }
+          parentNode = parentNode.parentNode;
+        }
+
+        (parentEntry || tree).children.push(entry);
+        return entry;
+      }
+
+      function flatten(tree) {
+        var result = [];
+        var queue = [];
+        var i;
+
+        for (i = 0; i < tree.children.length; i++) {
+          queue.push(tree.children[i]);
+        }
+
+        var remainingLevelEntries = queue.length;
+        var nextLevelEntries = 0;
+        var row = [];
+
+        for (i = 0; i < queue.length; i++) {
+          var entry = queue[i];
+          if (remainingLevelEntries <= 0) {
+            remainingLevelEntries = nextLevelEntries;
+            nextLevelEntries = 0;
+            result.push(row);
+            row = [];
+          }
+          row.push(entry.fn);
+          entry.children.forEach(function(childEntry) {
+            nextLevelEntries++;
+            queue.push(childEntry);
+          });
+          remainingLevelEntries--;
+        }
+
+        if (row.length) {
+          result.push(row);
+        }
+
+        return result;
+      }
+    }
 
     // TODO(matsko): document the signature in a better way
     return function(element, event, options) {
@@ -53,6 +137,12 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         options.tempClasses = null;
       }
 
+      var prepareClassName;
+      if (isStructural) {
+        prepareClassName = 'ng-' + event + PREPARE_CLASS_SUFFIX;
+        $$jqLite.addClass(element, prepareClassName);
+      }
+
       animationQueue.push({
         // this data is used by the postDigest code and passed into
         // the driver step function
@@ -80,32 +170,58 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
           // at all and it already has been closed due to destruction.
           if (getRunner(entry.element)) {
             animations.push(entry);
+          } else {
+            entry.close();
           }
         });
 
         // now any future animations will be in another postDigest
         animationQueue.length = 0;
 
-        forEach(groupAnimations(animations), function(animationEntry) {
-          // it's important that we apply the `ng-animate` CSS class and the
-          // temporary classes before we do any driver invoking since these
-          // CSS classes may be required for proper CSS detection.
-          animationEntry.beforeStart();
+        var groupedAnimations = groupAnimations(animations);
+        var toBeSortedAnimations = [];
 
-          var operation = invokeFirstDriver(animationEntry);
-          var triggerAnimationStart = operation && operation.start; /// TODO(matsko): only recognize operation.start()
+        forEach(groupedAnimations, function(animationEntry) {
+          toBeSortedAnimations.push({
+            domNode: getDomNode(animationEntry.from ? animationEntry.from.element : animationEntry.element),
+            fn: function triggerAnimationStart() {
+              // it's important that we apply the `ng-animate` CSS class and the
+              // temporary classes before we do any driver invoking since these
+              // CSS classes may be required for proper CSS detection.
+              animationEntry.beforeStart();
 
-          var closeFn = animationEntry.close;
-          if (!triggerAnimationStart) {
-            closeFn();
-          } else {
-            var animationRunner = triggerAnimationStart();
-            animationRunner.done(function(status) {
-              closeFn(!status);
-            });
-            updateAnimationRunners(animationEntry, animationRunner);
-          }
+              var startAnimationFn, closeFn = animationEntry.close;
+
+              // in the event that the element was removed before the digest runs or
+              // during the RAF sequencing then we should not trigger the animation.
+              var targetElement = animationEntry.anchors
+                  ? (animationEntry.from.element || animationEntry.to.element)
+                  : animationEntry.element;
+
+              if (getRunner(targetElement)) {
+                var operation = invokeFirstDriver(animationEntry);
+                if (operation) {
+                  startAnimationFn = operation.start;
+                }
+              }
+
+              if (!startAnimationFn) {
+                closeFn();
+              } else {
+                var animationRunner = startAnimationFn();
+                animationRunner.done(function(status) {
+                  closeFn(!status);
+                });
+                updateAnimationRunners(animationEntry, animationRunner);
+              }
+            }
+          });
         });
+
+        // we need to sort each of the animations in order of parent to child
+        // relationships. This ensures that the child classes are applied at the
+        // right time.
+        $$rAFScheduler(sortAnimations(toBeSortedAnimations));
       });
 
       return runner;
@@ -175,7 +291,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
           var lookupKey = from.animationID.toString();
           if (!anchorGroups[lookupKey]) {
             var group = anchorGroups[lookupKey] = {
-              // TODO(matsko): double-check this code
+              structural: true,
               beforeStart: function() {
                 fromAnimation.beforeStart();
                 toAnimation.beforeStart();
@@ -191,7 +307,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
             };
 
             // the anchor animations require that the from and to elements both have at least
-            // one shared CSS class which effictively marries the two elements together to use
+            // one shared CSS class which effectively marries the two elements together to use
             // the same animation driver and to properly sequence the anchor animation.
             if (group.classes.length) {
               preparedAnimations.push(group);
@@ -234,8 +350,6 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         // may attempt more elements, but custom drivers are more particular
         for (var i = drivers.length - 1; i >= 0; i--) {
           var driverName = drivers[i];
-          if (!$injector.has(driverName)) continue; // TODO(matsko): remove this check
-
           var factory = $injector.get(driverName);
           var driver = factory(animationDetails);
           if (driver) {
@@ -249,6 +363,10 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         if (tempClasses) {
           $$jqLite.addClass(element, tempClasses);
         }
+        if (prepareClassName) {
+          $$jqLite.removeClass(element, prepareClassName);
+          prepareClassName = null;
+        }
       }
 
       function updateAnimationRunners(animation, newRunner) {
@@ -260,7 +378,8 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         }
 
         function update(element) {
-          getRunner(element).setHost(newRunner);
+          var runner = getRunner(element);
+          if (runner) runner.setHost(newRunner);
         }
       }
 
@@ -271,7 +390,7 @@ var $$AnimationProvider = ['$animateProvider', function($animateProvider) {
         }
       }
 
-      function close(rejected) { // jshint ignore:line
+      function close(rejected) {
         element.off('$destroy', handleDestroyedElement);
         removeRunner(element);
 

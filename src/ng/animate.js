@@ -4,13 +4,6 @@ var $animateMinErr = minErr('$animate');
 var ELEMENT_NODE = 1;
 var NG_ANIMATE_CLASSNAME = 'ng-animate';
 
-
-function assertNoCallback(param) {
-  if (isFunction(param)) {
-    throw $animateMinErr('nocb', 'Do not pass a callback to animate methods');
-  }
-}
-
 function mergeClasses(a,b) {
   if (!a && !b) return '';
   if (!a) return b;
@@ -47,33 +40,27 @@ function splitClasses(classes) {
   return obj;
 }
 
-var $$CoreAnimateRunnerProvider = function() {
-  this.$get = ['$q', '$$rAF', function($q, $$rAF) {
-    function AnimateRunner() {}
-    AnimateRunner.all = noop;
-    AnimateRunner.chain = noop;
-    AnimateRunner.prototype = {
-      end: noop,
-      cancel: noop,
-      resume: noop,
-      pause: noop,
-      complete: noop,
-      then: function(pass, fail) {
-        return $q(function(resolve) {
-          $$rAF(function() {
-            resolve();
-          });
-        }).then(pass, fail);
-      }
-    };
-    return AnimateRunner;
-  }];
+// if any other type of options value besides an Object value is
+// passed into the $animate.method() animation then this helper code
+// will be run which will ignore it. While this patch is not the
+// greatest solution to this, a lot of existing plugins depend on
+// $animate to either call the callback (< 1.2) or return a promise
+// that can be changed. This helper function ensures that the options
+// are wiped clean incase a callback function is provided.
+function prepareAnimateOptions(options) {
+  return isObject(options)
+      ? options
+      : {};
+}
+
+var $$CoreAnimateJsProvider = /** @this */ function() {
+  this.$get = noop;
 };
 
 // this is prefixed with Core since it conflicts with
 // the animateQueueProvider defined in ngAnimate/animateQueue.js
-var $$CoreAnimateQueueProvider = function() {
-  var postDigestQueue = new HashMap();
+var $$CoreAnimateQueueProvider = /** @this */ function() {
+  var postDigestQueue = new NgMap();
   var postDigestElements = [];
 
   this.$get = ['$$AnimateRunner', '$rootScope',
@@ -85,75 +72,95 @@ var $$CoreAnimateQueueProvider = function() {
       pin: noop,
 
       push: function(element, event, options, domOperation) {
-        domOperation        && domOperation();
+        if (domOperation) {
+          domOperation();
+        }
 
         options = options || {};
-        options.from        && element.css(options.from);
-        options.to          && element.css(options.to);
+        if (options.from) {
+          element.css(options.from);
+        }
+        if (options.to) {
+          element.css(options.to);
+        }
 
         if (options.addClass || options.removeClass) {
           addRemoveClassesPostDigest(element, options.addClass, options.removeClass);
         }
 
-        return new $$AnimateRunner(); // jshint ignore:line
+        var runner = new $$AnimateRunner();
+
+        // since there are no animations to run the runner needs to be
+        // notified that the animation call is complete.
+        runner.complete();
+        return runner;
       }
     };
 
-    function addRemoveClassesPostDigest(element, add, remove) {
-      var data = postDigestQueue.get(element);
-      var classVal;
 
-      if (!data) {
-        postDigestQueue.put(element, data = {});
-        postDigestElements.push(element);
-      }
-
-      if (add) {
-        forEach(add.split(' '), function(className) {
+    function updateData(data, classes, value) {
+      var changed = false;
+      if (classes) {
+        classes = isString(classes) ? classes.split(' ') :
+                  isArray(classes) ? classes : [];
+        forEach(classes, function(className) {
           if (className) {
-            data[className] = true;
+            changed = true;
+            data[className] = value;
           }
         });
       }
+      return changed;
+    }
 
-      if (remove) {
-        forEach(remove.split(' '), function(className) {
-          if (className) {
-            data[className] = false;
-          }
-        });
-      }
-
-      if (postDigestElements.length > 1) return;
-
-      $rootScope.$$postDigest(function() {
-        forEach(postDigestElements, function(element) {
-          var data = postDigestQueue.get(element);
-          if (data) {
-            var existing = splitClasses(element.attr('class'));
-            var toAdd = '';
-            var toRemove = '';
-            forEach(data, function(status, className) {
-              var hasClass = !!existing[className];
-              if (status !== hasClass) {
-                if (status) {
-                  toAdd += (toAdd.length ? ' ' : '') + className;
-                } else {
-                  toRemove += (toRemove.length ? ' ' : '') + className;
-                }
+    function handleCSSClassChanges() {
+      forEach(postDigestElements, function(element) {
+        var data = postDigestQueue.get(element);
+        if (data) {
+          var existing = splitClasses(element.attr('class'));
+          var toAdd = '';
+          var toRemove = '';
+          forEach(data, function(status, className) {
+            var hasClass = !!existing[className];
+            if (status !== hasClass) {
+              if (status) {
+                toAdd += (toAdd.length ? ' ' : '') + className;
+              } else {
+                toRemove += (toRemove.length ? ' ' : '') + className;
               }
-            });
+            }
+          });
 
-            forEach(element, function(elm) {
-              toAdd    && jqLiteAddClass(elm, toAdd);
-              toRemove && jqLiteRemoveClass(elm, toRemove);
-            });
-            postDigestQueue.remove(element);
-          }
-        });
-
-        postDigestElements.length = 0;
+          forEach(element, function(elm) {
+            if (toAdd) {
+              jqLiteAddClass(elm, toAdd);
+            }
+            if (toRemove) {
+              jqLiteRemoveClass(elm, toRemove);
+            }
+          });
+          postDigestQueue.delete(element);
+        }
       });
+      postDigestElements.length = 0;
+    }
+
+
+    function addRemoveClassesPostDigest(element, add, remove) {
+      var data = postDigestQueue.get(element) || {};
+
+      var classesAdded = updateData(data, add, true);
+      var classesRemoved = updateData(data, remove, false);
+
+      if (classesAdded || classesRemoved) {
+
+        postDigestQueue.set(element, data);
+        postDigestElements.push(element);
+
+        if (postDigestElements.length === 1) {
+          $rootScope.$$postDigest(handleCSSClassChanges);
+        }
+      }
     }
   }];
 };
@@ -170,8 +177,9 @@ var $$CoreAnimateQueueProvider = function() {
  *
  * To see the functional implementation check out `src/ngAnimate/animate.js`.
  */
-var $AnimateProvider = ['$provide', function($provide) {
+var $AnimateProvider = ['$provide', /** @this */ function($provide) {
   var provider = this;
+  var classNameFilter = null;
 
   this.$$registeredAnimations = Object.create(null);
 
@@ -216,7 +224,7 @@ var $AnimateProvider = ['$provide', function($provide) {
    */
   this.register = function(name, factory) {
     if (name && name.charAt(0) !== '.') {
-      throw $animateMinErr('notcsel', "Expecting class selector starting with '.' got '{0}'.", name);
+      throw $animateMinErr('notcsel', 'Expecting class selector starting with \'.\' got \'{0}\'.', name);
     }
 
     var key = name + '-animation';
@@ -240,16 +248,16 @@ var $AnimateProvider = ['$provide', function($provide) {
    */
   this.classNameFilter = function(expression) {
     if (arguments.length === 1) {
-      this.$$classNameFilter = (expression instanceof RegExp) ? expression : null;
-      if (this.$$classNameFilter) {
-        var reservedRegex = new RegExp("(\\s+|\\/)" + NG_ANIMATE_CLASSNAME + "(\\s+|\\/)");
-        if (reservedRegex.test(this.$$classNameFilter.toString())) {
-          throw $animateMinErr('nongcls','$animateProvider.classNameFilter(regex) prohibits accepting a regex value which matches/contains the "{0}" CSS class.', NG_ANIMATE_CLASSNAME);
-
+      classNameFilter = (expression instanceof RegExp) ? expression : null;
+      if (classNameFilter) {
+        var reservedRegex = new RegExp('[(\\s|\\/)]' + NG_ANIMATE_CLASSNAME + '[(\\s|\\/)]');
+        if (reservedRegex.test(classNameFilter.toString())) {
+          classNameFilter = null;
+          throw $animateMinErr('nongcls', '$animateProvider.classNameFilter(regex) prohibits accepting a regex value which matches/contains the "{0}" CSS class.', NG_ANIMATE_CLASSNAME);
         }
       }
     }
-    return this.$$classNameFilter;
+    return classNameFilter;
   };
 
   this.$get = ['$$animateQueue', function($$animateQueue) {
@@ -263,7 +271,11 @@ var $AnimateProvider = ['$provide', function($provide) {
           afterElement = null;
         }
       }
-      afterElement ? afterElement.after(element) : parentElement.prepend(element);
+      if (afterElement) {
+        afterElement.after(element);
+      } else {
+        parentElement.prepend(element);
+      }
     }
 
     /**
@@ -274,7 +286,7 @@ var $AnimateProvider = ['$provide', function($provide) {
      * when an animation is detected (and animations are enabled), $animate will do the heavy lifting
      * to ensure that animation runs with the triggered DOM operation.
      *
-     * By default $animate doesn't trigger an animations. This is because the `ngAnimate` module isn't
+     * By default $animate doesn't trigger any animations. This is because the `ngAnimate` module isn't
      * included and only when it is active then the animation hooks that `$animate` triggers will be
      * functional. Once active then all structural `ng-` directives will trigger animations as they perform
      * their DOM-related operations (enter, leave and move). Other directives such as `ngClass`,
@@ -329,15 +341,20 @@ var $AnimateProvider = ['$provide', function($provide) {
        * // remove all the animation event listeners listening for `enter`
        * $animate.off('enter');
        *
+       * // remove listeners for all animation events from the container element
+       * $animate.off(container);
+       *
        * // remove all the animation event listeners listening for `enter` on the given element and its children
        * $animate.off('enter', container);
        *
-       * // remove the event listener function provided by `listenerFn` that is set
-       * // to listen for `enter` on the given `element` as well as its children
+       * // remove the event listener function provided by `callback` that is set
+       * // to listen for `enter` on the given `container` as well as its children
        * $animate.off('enter', container, callback);
        * ```
        *
-       * @param {string} event the animation event (e.g. enter, leave, move, addClass, removeClass, etc...)
+       * @param {string|DOMElement} event|container the animation event (e.g. enter, leave, move,
+       * addClass, removeClass, etc...), or the container element. If it is the element, all other
+       * arguments are ignored.
        * @param {DOMElement=} container the container element the event listener was placed on
        * @param {Function=} callback the callback function that was registered as the listener
        */
@@ -348,7 +365,7 @@ var $AnimateProvider = ['$provide', function($provide) {
        * @name $animate#pin
        * @kind function
        * @description Associates the provided element with a host parent element to allow the element to be animated even if it exists
-       *    outside of the DOM structure of the Angular application. By doing so, any animation triggered via `$animate` can be issued on the
+       *    outside of the DOM structure of the AngularJS application. By doing so, any animation triggered via `$animate` can be issued on the
        *    element despite being outside the realm of the application or within another application. Say for example if the application
        *    was bootstrapped on an element that is somewhere inside of the `<body>` tag, but we wanted to allow for an element to be situated
        *    as a direct child of `document.body`, then this can be achieved by pinning the element via `$animate.pin(element)`. Keep in mind
@@ -401,7 +418,9 @@ var $AnimateProvider = ['$provide', function($provide) {
        * @param {Promise} animationPromise The animation promise that is returned when an animation is started.
        */
       cancel: function(runner) {
-        runner.end && runner.end();
+        if (runner.end) {
+          runner.end();
+        }
       },
 
       /**
@@ -418,17 +437,22 @@ var $AnimateProvider = ['$provide', function($provide) {
        * @param {DOMElement} parent the parent element which will append the element as
        *   a child (so long as the after element is not present)
        * @param {DOMElement=} after the sibling element after which the element will be appended
-       * @param {object=} options an optional collection of options/styles that will be applied to the element
+       * @param {object=} options an optional collection of options/styles that will be applied to the element.
+       *   The object can have the following properties:
+       *
+       *   - **addClass** - `{string}` - space-separated CSS classes to add to element
+       *   - **from** - `{Object}` - CSS properties & values at the beginning of animation. Must have matching `to`
+       *   - **removeClass** - `{string}` - space-separated CSS classes to remove from element
+       *   - **to** - `{Object}` - CSS properties & values at end of animation. Must have matching `from`
        *
        * @return {Promise} the animation callback promise
        */
       enter: function(element, parent, after, options) {
-        assertNoCallback(options);
         parent = parent && jqLite(parent);
         after = after && jqLite(after);
         parent = parent || after.parent();
         domInsert(element, parent, after);
-        return $$animateQueue.push(element, 'enter', options);
+        return $$animateQueue.push(element, 'enter', prepareAnimateOptions(options));
       },
 
       /**
@@ -445,17 +469,22 @@ var $AnimateProvider = ['$provide', function($provide) {
        * @param {DOMElement} parent the parent element which will append the element as
        *   a child (so long as the after element is not present)
        * @param {DOMElement=} after the sibling element after which the element will be appended
-       * @param {object=} options an optional collection of options/styles that will be applied to the element
+       * @param {object=} options an optional collection of options/styles that will be applied to the element.
+       *   The object can have the following properties:
+       *
+       *   - **addClass** - `{string}` - space-separated CSS classes to add to element
+       *   - **from** - `{Object}` - CSS properties & values at the beginning of animation. Must have matching `to`
+       *   - **removeClass** - `{string}` - space-separated CSS classes to remove from element
+       *   - **to** - `{Object}` - CSS properties & values at end of animation. Must have matching `from`
        *
        * @return {Promise} the animation callback promise
        */
       move: function(element, parent, after, options) {
-        assertNoCallback(options);
         parent = parent && jqLite(parent);
         after = after && jqLite(after);
         parent = parent || after.parent();
         domInsert(element, parent, after);
-        return $$animateQueue.push(element, 'move', options);
+        return $$animateQueue.push(element, 'move', prepareAnimateOptions(options));
       },
 
       /**
@@ -467,13 +496,18 @@ var $AnimateProvider = ['$provide', function($provide) {
        * digest once the animation has completed.
        *
        * @param {DOMElement} element the element which will be removed from the DOM
-       * @param {object=} options an optional collection of options/styles that will be applied to the element
+       * @param {object=} options an optional collection of options/styles that will be applied to the element.
+       *   The object can have the following properties:
+       *
+       *   - **addClass** - `{string}` - space-separated CSS classes to add to element
+       *   - **from** - `{Object}` - CSS properties & values at the beginning of animation. Must have matching `to`
+       *   - **removeClass** - `{string}` - space-separated CSS classes to remove from element
+       *   - **to** - `{Object}` - CSS properties & values at end of animation. Must have matching `from`
        *
        * @return {Promise} the animation callback promise
        */
       leave: function(element, options) {
-        assertNoCallback(options);
-        return $$animateQueue.push(element, 'leave', options, function() {
+        return $$animateQueue.push(element, 'leave', prepareAnimateOptions(options), function() {
           element.remove();
         });
       },
@@ -492,13 +526,18 @@ var $AnimateProvider = ['$provide', function($provide) {
        *
        * @param {DOMElement} element the element which the CSS classes will be applied to
        * @param {string} className the CSS class(es) that will be added (multiple classes are separated via spaces)
-       * @param {object=} options an optional collection of options/styles that will be applied to the element
+       * @param {object=} options an optional collection of options/styles that will be applied to the element.
+       *   The object can have the following properties:
+       *
+       *   - **addClass** - `{string}` - space-separated CSS classes to add to element
+       *   - **from** - `{Object}` - CSS properties & values at the beginning of animation. Must have matching `to`
+       *   - **removeClass** - `{string}` - space-separated CSS classes to remove from element
+       *   - **to** - `{Object}` - CSS properties & values at end of animation. Must have matching `from`
        *
        * @return {Promise} the animation callback promise
        */
       addClass: function(element, className, options) {
-        assertNoCallback(options);
-        options = options || {};
+        options = prepareAnimateOptions(options);
         options.addClass = mergeClasses(options.addclass, className);
         return $$animateQueue.push(element, 'addClass', options);
       },
@@ -517,13 +556,18 @@ var $AnimateProvider = ['$provide', function($provide) {
        *
        * @param {DOMElement} element the element which the CSS classes will be applied to
        * @param {string} className the CSS class(es) that will be removed (multiple classes are separated via spaces)
-       * @param {object=} options an optional collection of options/styles that will be applied to the element
+       * @param {object=} options an optional collection of options/styles that will be applied to the element.
+       *   The object can have the following properties:
+       *
+       *   - **addClass** - `{string}` - space-separated CSS classes to add to element
+       *   - **from** - `{Object}` - CSS properties & values at the beginning of animation. Must have matching `to`
+       *   - **removeClass** - `{string}` - space-separated CSS classes to remove from element
+       *   - **to** - `{Object}` - CSS properties & values at end of animation. Must have matching `from`
        *
        * @return {Promise} the animation callback promise
        */
       removeClass: function(element, className, options) {
-        assertNoCallback(options);
-        options = options || {};
+        options = prepareAnimateOptions(options);
         options.removeClass = mergeClasses(options.removeClass, className);
         return $$animateQueue.push(element, 'removeClass', options);
       },
@@ -543,13 +587,18 @@ var $AnimateProvider = ['$provide', function($provide) {
        * @param {DOMElement} element the element which the CSS classes will be applied to
        * @param {string} add the CSS class(es) that will be added (multiple classes are separated via spaces)
        * @param {string} remove the CSS class(es) that will be removed (multiple classes are separated via spaces)
-       * @param {object=} options an optional collection of options/styles that will be applied to the element
+       * @param {object=} options an optional collection of options/styles that will be applied to the element.
+       *   The object can have the following properties:
+       *
+       *   - **addClass** - `{string}` - space-separated CSS classes to add to element
+       *   - **from** - `{Object}` - CSS properties & values at the beginning of animation. Must have matching `to`
+       *   - **removeClass** - `{string}` - space-separated CSS classes to remove from element
+       *   - **to** - `{Object}` - CSS properties & values at end of animation. Must have matching `from`
        *
        * @return {Promise} the animation callback promise
        */
       setClass: function(element, add, remove, options) {
-        assertNoCallback(options);
-        options = options || {};
+        options = prepareAnimateOptions(options);
         options.addClass = mergeClasses(options.addClass, add);
         options.removeClass = mergeClasses(options.removeClass, remove);
         return $$animateQueue.push(element, 'setClass', options);
@@ -561,24 +610,42 @@ var $AnimateProvider = ['$provide', function($provide) {
        * @kind function
        *
        * @description Performs an inline animation on the element which applies the provided to and from CSS styles to the element.
-       * If any detected CSS transition, keyframe or JavaScript matches the provided className value then the animation will take
-       * on the provided styles. For example, if a transition animation is set for the given className then the provided from and
-       * to styles will be applied alongside the given transition. If a JavaScript animation is detected then the provided styles
-       * will be given in as function paramters into the `animate` method (or as apart of the `options` parameter).
+       * If any detected CSS transition, keyframe or JavaScript matches the provided className value, then the animation will take
+       * on the provided styles. For example, if a transition animation is set for the given className, then the provided `from` and
+       * `to` styles will be applied alongside the given transition. If the CSS style provided in `from` does not have a corresponding
+       * style in `to`, the style in `from` is applied immediately, and no animation is run.
+       * If a JavaScript animation is detected then the provided styles will be given in as function parameters into the `animate`
+       * method (or as part of the `options` parameter):
+       *
+       * ```js
+       * ngModule.animation('.my-inline-animation', function() {
+       *   return {
+       *     animate : function(element, from, to, done, options) {
+       *       //animation
+       *       done();
+       *     }
+       *   }
+       * });
+       * ```
        *
        * @param {DOMElement} element the element which the CSS styles will be applied to
        * @param {object} from the from (starting) CSS styles that will be applied to the element and across the animation.
        * @param {object} to the to (destination) CSS styles that will be applied to the element and across the animation.
        * @param {string=} className an optional CSS class that will be applied to the element for the duration of the animation. If
        *    this value is left as empty then a CSS class of `ng-inline-animate` will be applied to the element.
-       *    (Note that if no animation is detected then this value will not be appplied to the element.)
-       * @param {object=} options an optional collection of options/styles that will be applied to the element
+       *    (Note that if no animation is detected then this value will not be applied to the element.)
+       * @param {object=} options an optional collection of options/styles that will be applied to the element.
+       *   The object can have the following properties:
+       *
+       *   - **addClass** - `{string}` - space-separated CSS classes to add to element
+       *   - **from** - `{Object}` - CSS properties & values at the beginning of animation. Must have matching `to`
+       *   - **removeClass** - `{string}` - space-separated CSS classes to remove from element
+       *   - **to** - `{Object}` - CSS properties & values at end of animation. Must have matching `from`
        *
        * @return {Promise} the animation callback promise
        */
       animate: function(element, from, to, className, options) {
-        assertNoCallback(options);
-        options = options || {};
+        options = prepareAnimateOptions(options);
         options.from = options.from ? extend(options.from, from) : from;
         options.to   = options.to   ? extend(options.to, to)     : to;
 

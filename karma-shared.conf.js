@@ -17,7 +17,9 @@ module.exports = function(config, specificOptions) {
       testName: specificOptions.testName || 'AngularJS',
       startConnect: true,
       options: {
-        'selenium-version': '2.41.0'
+        // We need selenium version +2.46 for Firefox 39 and the last selenium version for OS X is 2.45.
+        // TODO: Uncomment when there is a selenium 2.46 available for OS X.
+        // 'selenium-version': '2.46.0'
       }
     },
 
@@ -35,18 +37,24 @@ module.exports = function(config, specificOptions) {
       'SL_Chrome': {
         base: 'SauceLabs',
         browserName: 'chrome',
-        version: '39'
+        version: '51'
       },
       'SL_Firefox': {
         base: 'SauceLabs',
         browserName: 'firefox',
-        version: '31'
+        version: '47'
       },
-      'SL_Safari': {
+      'SL_Safari_8': {
         base: 'SauceLabs',
         browserName: 'safari',
         platform: 'OS X 10.10',
         version: '8'
+      },
+      'SL_Safari_9': {
+        base: 'SauceLabs',
+        browserName: 'safari',
+        platform: 'OS X 10.11',
+        version: '9'
       },
       'SL_IE_9': {
         base: 'SauceLabs',
@@ -67,29 +75,29 @@ module.exports = function(config, specificOptions) {
         version: '11'
       },
       'SL_iOS': {
-        base: "SauceLabs",
-        browserName: "iphone",
-        platform: "OS X 10.10",
-        version: "8.1"
+        base: 'SauceLabs',
+        browserName: 'iphone',
+        platform: 'OS X 10.10',
+        version: '8.1'
       },
 
       'BS_Chrome': {
         base: 'BrowserStack',
         browser: 'chrome',
         os: 'OS X',
-        os_version: 'Yosemite'
+        os_version: 'Sierra'
       },
       'BS_Safari': {
         base: 'BrowserStack',
         browser: 'safari',
         os: 'OS X',
-        os_version: 'Yosemite'
+        os_version: 'Sierra'
       },
       'BS_Firefox': {
         base: 'BrowserStack',
         browser: 'firefox',
         os: 'Windows',
-        os_version: '8'
+        os_version: '10'
       },
       'BS_IE_9': {
         base: 'BrowserStack',
@@ -112,11 +120,23 @@ module.exports = function(config, specificOptions) {
         os: 'Windows',
         os_version: '8.1'
       },
-      'BS_iOS': {
+      'BS_iOS_8': {
         base: 'BrowserStack',
         device: 'iPhone 6',
         os: 'ios',
-        os_version: '8.0'
+        os_version: '8.3'
+      },
+      'BS_iOS_9': {
+        base: 'BrowserStack',
+        device: 'iPhone 6S',
+        os: 'ios',
+        os_version: '9.3'
+      },
+      'BS_iOS_10': {
+        base: 'BrowserStack',
+        device: 'iPhone 7',
+        os: 'ios',
+        os_version: '10.0'
       }
     }
   });
@@ -162,8 +182,8 @@ module.exports = function(config, specificOptions) {
     '/someSanitizedUrl',
     '/{{testUrl}}'
   ];
-  var log4js = require('./node_modules/karma/node_modules/log4js');
-  var layouts = require('./node_modules/karma/node_modules/log4js/lib/layouts');
+  var log4js = require('log4js');
+  var layouts = require('log4js/lib/layouts');
   var originalConfigure = log4js.configure;
   log4js.configure = function(log4jsConfig) {
     var consoleAppender = log4jsConfig.appenders.shift();
